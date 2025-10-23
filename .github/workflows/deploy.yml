@@ -1,0 +1,58 @@
+name: Deploy Hybrid05 CICD Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⚪ Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟠 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-2
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: 🟠 Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 🐳 Build Docker Image
+        run: docker build -t hybrid05-web .
+
+      - name: 🐳 Tag Docker Image
+        run: docker tag hybrid05-web ${{ steps.login-ecr.outputs.registry }}/hb05-ecr:latest
+
+      - name: 🟠 Push Docker Image to ECR
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/hb05-ecr:latest
+
+      - name: ⚫ Set File Permissions
+        run: |
+          sudo chown -R $(whoami):$(whoami) .
+          chmod -R 755 scripts
+          chmod 644 docker-compose.yml
+
+      - name: 🟠 Prepare Deployment Bundle
+        run: |
+          mkdir -p deploy-files
+          cp appspec.yml docker-compose.yml Dockerfile -t deploy-files
+          cp index.html -t deploy-files
+          cp -r scripts deploy-files
+          tar -czvf $GITHUB_SHA.tar.gz -C deploy-files .
+
+      - name: 🟠 Upload to S3
+        run: aws s3 cp --region ap-northeast-2 ./$GITHUB_SHA.tar.gz s3://hb05-bucket/$GITHUB_SHA.tar.gz
+
+      - name: 🟠 Deploy to EC2 via CodeDeploy
+        run: |
+          aws deploy create-deployment \
+            --application-name hb05-codedeploy-app \
+            --deployment-config-name CodeDeployDefault.AllAtOnce \
+            --deployment-group-name hb05-codedeploy-group \
+            --s3-location "bucket=hb05-bucket,bundleType=tgz,key=$GITHUB_SHA.tar.gz"
